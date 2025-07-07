@@ -2,7 +2,17 @@
 
 A minimal TypeScript implementation of an aggregateless event sourcing system with PostgreSQL persistence. This approach eliminates DDD aggregates in favor of independent feature slices that rebuild minimal state on-demand from events. In general, we get rid of central, shared states and OO-paradigms.
 
-This is a practical implementation of the concepts described in [Aggregateless Event Sourcing](https://ricofritzsche.me/p/ec16995f-c69d-4946-83c7-efdf98835585/?member_status=free).
+This is a practical implementation of the concepts described in [Aggregateless Event Sourcing](https://ricofritzsche.me/p/ec16995f-c69d-4946-83c7-efdf98835585/?member_status=free) and the step-by-step implementation guide [How I Built an Aggregateless Event Store with TypeScript and PostgreSQL](https://ricofritzsche.me/how-i-built-an-aggregateless-event-store-with-typescript-and-postgresql/).
+
+## Quick Start
+
+```bash
+npm install && npm run build
+echo "DATABASE_URL=postgres://postgres:postgres@localhost:5432/bank" > .env
+npm run cli
+```
+
+Start with opening a bank account, then try deposits, withdrawals, and transfers. Press Enter to continue between operations.
 
 ## Core Philosophy
 
