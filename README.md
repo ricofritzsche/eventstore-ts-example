@@ -78,11 +78,11 @@ const filter = EventFilter
   .createFilter(['BankAccountOpened'])
   .withPayloadPredicate('accountId', accountId);
 
-const depositState = await getDepositState(eventStore, command.accountId);
-const result = processDepositCommand(command, depositState.existingDepositIds);
+const depositStateResult = await getDepositState(eventStore, command.accountId);
+const result = processDepositCommand(command, depositStateResult.state.existingDepositIds);
 
-// Append with same filter - fails if context changed
-await store.append(filter, newEvents);
+// Append with same filter and captured sequence - fails if context changed
+await store.append(filter, newEvents, depositStateResult.maxSequenceNumber);
 ```
 
 ### Payload-Based Querying
@@ -99,7 +99,8 @@ const filter = EventFilter.createFilter(
     { fromAccountId: toAccountId },    // Transfers from target
   ]
 );
-const events = await eventStore.query<any>(filter);
+const result = await eventStore.query<any>(filter);
+const events = result.events;
 
 // Generates SQL: WHERE event_type = ANY($1) AND (payload @> $2 OR payload @> $3 OR ...)
 ```
@@ -117,8 +118,8 @@ interface HasEventType {
 
 // Main EventStore interface  
 interface IEventStore {
-  query<T extends HasEventType>(filter: EventFilter): Promise<T[]>;
-  append<T extends HasEventType>(filter: EventFilter, events: T[]): Promise<void>;
+  query<T extends HasEventType>(filter: EventFilter): Promise<{ events: T[]; maxSequenceNumber: number }>;
+  append<T extends HasEventType>(filter: EventFilter, events: T[], expectedMaxSequence: number): Promise<void>;
   close(): Promise<void>;
 }
 ```
@@ -221,10 +222,11 @@ const filter = EventFilter
   .withPayloadPredicate('accountId', accountId);
 
 const events = [new BankAccountOpenedEvent(accountId, 'John Doe', 'checking', 100, 'USD')];
-await store.append(filter, events);
+await store.append(filter, events, 0);
 
 // 4. Query events
-const storedEvents = await store.query<BankAccountOpenedEvent>(filter);
+const result = await store.query<BankAccountOpenedEvent>(filter);
+const storedEvents = result.events;
 ```
 
 ## Features
@@ -290,9 +292,9 @@ export async function execute(
   command: DepositMoneyCommand
 ): Promise<DepositResult> {
   // Single query to build complete state
-  const depositState = await getDepositState(eventStore, command.accountId);
+  const depositStateResult = await getDepositState(eventStore, command.accountId);
   
-  if (!depositState.account) {
+  if (!depositStateResult.state.account) {
     return {
       success: false,
       error: { type: 'InvalidAmount', message: 'Account not found' }
@@ -302,11 +304,11 @@ export async function execute(
   // Use account's currency if not specified
   const effectiveCommand = {
     ...command,
-    currency: command.currency || depositState.account.currency
+    currency: command.currency || depositStateResult.state.account.currency
   };
 
   // Pure business logic with complete state
-  const result = processDepositCommand(effectiveCommand, depositState.existingDepositIds);
+  const result = processDepositCommand(effectiveCommand, depositStateResult.state.existingDepositIds);
   if (!result.success) {
     return result;
   }
@@ -324,7 +326,7 @@ export async function execute(
       result.event.timestamp
     );
     
-    await eventStore.append(filter, [event]);
+    await eventStore.append(filter, [event], depositStateResult.maxSequenceNumber);
     return result;
   } catch (error) {
     return {
@@ -344,10 +346,10 @@ async function getAccountViewState(eventStore: IEventStore, accountId: string): 
 }> {
   // Single comprehensive query
   const filter = EventFilter.createFilter(['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn', 'MoneyTransferred']);
-  const allEvents = await eventStore.query<any>(filter);
+  const result = await eventStore.query<any>(filter);
   
   // Filter for relevant events in memory
-  const relevantEvents = allEvents.filter(event => {
+  const relevantEvents = result.events.filter(event => {
     const eventType = event.event_type || (event.eventType && event.eventType());
     return (
       (eventType === 'BankAccountOpened' && event.accountId === accountId) ||

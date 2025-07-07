@@ -6,13 +6,16 @@ export async function execute(
   eventStore: IEventStore,
   query: GetAccountQuery
 ): Promise<GetAccountResult> {
-  const accountViewState = await getAccountViewState(eventStore, query.accountId);
+  const accountViewStateResult = await getAccountViewState(eventStore, query.accountId);
   
-  return accountViewState.account;
+  return accountViewStateResult.state.account;
 }
 
 async function getAccountViewState(eventStore: IEventStore, accountId: string): Promise<{
-  account: BankAccount | null;
+  state: {
+    account: BankAccount | null;
+  };
+  maxSequenceNumber: number;
 }> {
   const accountEventsFilter = EventFilter.createFilter(['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn'])
     .withPayloadPredicates({ accountId });
@@ -23,20 +26,27 @@ async function getAccountViewState(eventStore: IEventStore, accountId: string): 
   const transferToFilter = EventFilter.createFilter(['MoneyTransferred'])
     .withPayloadPredicates({ toAccountId: accountId });
   
-  const [accountEvents, transferFromEvents, transferToEvents] = await Promise.all([
+  const [accountEventsResult, transferFromEventsResult, transferToEventsResult] = await Promise.all([
     eventStore.query<any>(accountEventsFilter),
     eventStore.query<any>(transferFromFilter),
     eventStore.query<any>(transferToFilter)
   ]);
   
-  const allEvents = [...accountEvents, ...transferFromEvents, ...transferToEvents];
+  const allEvents = [...accountEventsResult.events, ...transferFromEventsResult.events, ...transferToEventsResult.events];
   
   const openingEvent = allEvents.find(e => 
     (e.event_type || (e.eventType && e.eventType())) === 'BankAccountOpened'
   );
   
   if (!openingEvent) {
-    return { account: null };
+    return { 
+      state: { account: null },
+      maxSequenceNumber: Math.max(
+        accountEventsResult.maxSequenceNumber,
+        transferFromEventsResult.maxSequenceNumber,
+        transferToEventsResult.maxSequenceNumber
+      )
+    };
   }
 
   let currentBalance = openingEvent.initialDeposit;
@@ -57,14 +67,23 @@ async function getAccountViewState(eventStore: IEventStore, accountId: string): 
     }
   }
 
+  const maxSequenceNumber = Math.max(
+    accountEventsResult.maxSequenceNumber,
+    transferFromEventsResult.maxSequenceNumber,
+    transferToEventsResult.maxSequenceNumber
+  );
+
   return {
-    account: {
-      accountId: openingEvent.accountId,
-      customerName: openingEvent.customerName,
-      accountType: openingEvent.accountType,
-      balance: currentBalance,
-      currency: openingEvent.currency,
-      openedAt: openingEvent.openedAt
-    }
+    state: {
+      account: {
+        accountId: openingEvent.accountId,
+        customerName: openingEvent.customerName,
+        accountType: openingEvent.accountType,
+        balance: currentBalance,
+        currency: openingEvent.currency,
+        openedAt: openingEvent.openedAt
+      }
+    },
+    maxSequenceNumber
   };
 }

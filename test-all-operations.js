@@ -15,15 +15,16 @@ async function testAllOperations() {
 
     // 1. Create two accounts
     console.log('1. Creating two accounts...');
+    const timestamp = Date.now();
     const account1Result = await OpenBankAccount.execute(eventStore, {
-      customerName: 'Alice',
+      customerName: `Alice_${timestamp}`,
       accountType: 'checking',
       initialDeposit: 500,
       currency: 'EUR'
     });
     
     const account2Result = await OpenBankAccount.execute(eventStore, {
-      customerName: 'Bob',
+      customerName: `Bob_${timestamp}`,
       accountType: 'savings',
       initialDeposit: 300,
       currency: 'EUR'
@@ -37,8 +38,8 @@ async function testAllOperations() {
     const account1Id = account1Result.event.accountId;
     const account2Id = account2Result.event.accountId;
     
-    console.log(`✅ Alice's account: ${account1Id} (500 EUR)`);
-    console.log(`✅ Bob's account: ${account2Id} (300 EUR)\n`);
+    console.log(`✅ Alice_${timestamp}'s account: ${account1Id} (500 EUR)`);
+    console.log(`✅ Bob_${timestamp}'s account: ${account2Id} (300 EUR)\n`);
 
     // 2. Deposit money to Alice's account
     console.log('2. Depositing 200 EUR to Alice\'s account...');

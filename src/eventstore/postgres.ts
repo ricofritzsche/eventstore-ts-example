@@ -17,9 +17,15 @@ export class PostgresEventStore implements IEventStore {
     this.pool = new Pool({ connectionString });
   }
 
-  async query<T extends HasEventType>(filter: EventFilter): Promise<T[]> {
+  async query<T extends HasEventType>(filter: EventFilter): Promise<{ events: T[]; maxSequenceNumber: number }> {
     const client = await this.pool.connect();
     try {
+      // First get the max sequence number for the context
+      const contextQuery = this.buildContextQuery(filter);
+      const contextResult = await client.query(contextQuery.sql, contextQuery.params);
+      const maxSequenceNumber = contextResult.rows[0]?.max_seq || 0;
+
+      // Then get the actual events
       let query = 'SELECT * FROM events WHERE event_type = ANY($1)';
       const params: unknown[] = [filter.eventTypes];
 
@@ -41,20 +47,19 @@ export class PostgresEventStore implements IEventStore {
 
       const result = await client.query(query, params);
       
-      return result.rows.map(row => this.deserializeEvent<T>(row));
+      const events = result.rows.map(row => this.deserializeEvent<T>(row));
+      
+      return { events, maxSequenceNumber };
     } finally {
       client.release();
     }
   }
 
-  async append<T extends HasEventType>(filter: EventFilter, events: T[]): Promise<void> {
+  async append<T extends HasEventType>(filter: EventFilter, events: T[], expectedMaxSequence: number): Promise<void> {
     if (events.length === 0) return;
 
     const client = await this.pool.connect();
     try {
-      const contextQueryResult = this.buildContextQuery(filter);
-      const contextResult = await client.query(contextQueryResult.sql, contextQueryResult.params);
-      const expectedMaxSeq = contextResult.rows[0]?.max_seq || 0;
 
       const eventTypes: string[] = [];
       const payloads: string[] = [];
@@ -69,11 +74,11 @@ export class PostgresEventStore implements IEventStore {
       }
 
       const contextQueryForCte = this.buildContextQuery(filter);
-      const cteQuery = this.buildCteInsertQuery(filter, expectedMaxSeq);
+      const cteQuery = this.buildCteInsertQuery(filter, expectedMaxSequence);
       
       const params = [
         ...contextQueryForCte.params,                         // Context parameters (dynamic based on filter)
-        expectedMaxSeq,                                       // Expected max sequence
+        expectedMaxSequence,                                  // Expected max sequence
         eventTypes,                                           // Event types to insert
         payloads,                                             // Payloads to insert
         metadata                                             // Metadata to insert

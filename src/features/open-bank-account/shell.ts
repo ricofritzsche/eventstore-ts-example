@@ -13,15 +13,14 @@ export async function execute(
   
   const openAccountState = await getOpenAccountState(eventStore, command.customerName);
   
-  const result = processOpenAccountCommand(command, accountId, openAccountState.existingCustomerNames);
+  const result = processOpenAccountCommand(command, accountId, openAccountState.state.existingCustomerNames);
   
   if (!result.success) {
     return result;
   }
 
   try {
-    const filter = EventFilter.createFilter(['BankAccountOpened'])
-      .withPayloadPredicate('customerName', command.customerName);
+    const appendFilter = EventFilter.createFilter(['BankAccountOpened']);
     
     const event = new BankAccountOpenedEvent(
       result.event.accountId,
@@ -32,7 +31,7 @@ export async function execute(
       result.event.openedAt
     );
     
-    await eventStore.append(filter, [event]);
+    await eventStore.append(appendFilter, [event], openAccountState.maxSequenceNumber);
     
     return result;
   } catch (error) {
@@ -44,16 +43,22 @@ export async function execute(
 }
 
 async function getOpenAccountState(eventStore: IEventStore, customerName: string): Promise<{
-  existingCustomerNames: string[];
+  state: {
+    existingCustomerNames: string[];
+  };
+  maxSequenceNumber: number;
 }> {
   const filter = EventFilter.createFilter(['BankAccountOpened']);
   
-  const allEvents = await eventStore.query<any>(filter);
+  const result = await eventStore.query<any>(filter);
   
-  const existingCustomerNames = allEvents.map(e => e.customerName);
+  const existingCustomerNames = result.events.map(e => e.customerName);
 
   return {
-    existingCustomerNames
+    state: {
+      existingCustomerNames
+    },
+    maxSequenceNumber: result.maxSequenceNumber
   };
 }
 

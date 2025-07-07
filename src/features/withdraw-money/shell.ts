@@ -8,9 +8,9 @@ export async function execute(
   eventStore: IEventStore,
   command: WithdrawMoneyCommand
 ): Promise<WithdrawResult> {
-  const withdrawState = await getWithdrawState(eventStore, command.accountId);
+  const withdrawStateResult = await getWithdrawState(eventStore, command.accountId);
   
-  if (!withdrawState.account) {
+  if (!withdrawStateResult.state.account) {
     return {
       success: false,
       error: { type: 'InsufficientFunds', message: 'Account not found' }
@@ -19,18 +19,26 @@ export async function execute(
 
   const effectiveCommand = {
     ...command,
-    currency: command.currency || withdrawState.account.currency
+    currency: command.currency || withdrawStateResult.state.account.currency
   };
 
-  const result = processWithdrawCommand(effectiveCommand, withdrawState.account.balance, withdrawState.existingWithdrawalIds);
+  const result = processWithdrawCommand(effectiveCommand, withdrawStateResult.state.account.balance, withdrawStateResult.state.existingWithdrawalIds);
   
   if (!result.success) {
     return result;
   }
 
   try {
-    const filter = EventFilter.createFilter(['MoneyWithdrawn'])
-      .withPayloadPredicate('accountId', command.accountId);
+    // Use a filter that captures all events that affect the account balance
+    // This matches the scope of events considered in getWithdrawState
+    const filter = EventFilter.createFilter(
+      ['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn', 'MoneyTransferred'],
+      [
+        { accountId: command.accountId },
+        { fromAccountId: command.accountId },
+        { toAccountId: command.accountId }
+      ]
+    );
     
     const event = new MoneyWithdrawnEvent(
       result.event.accountId,
@@ -40,7 +48,7 @@ export async function execute(
       result.event.timestamp
     );
     
-    await eventStore.append(filter, [event]);
+    await eventStore.append(filter, [event], withdrawStateResult.maxSequenceNumber);
     
     return result;
   } catch (error) {
@@ -53,8 +61,11 @@ export async function execute(
 
 
 async function getWithdrawState(eventStore: IEventStore, accountId: string): Promise<{
-  account: { balance: number; currency: string } | null;
-  existingWithdrawalIds: string[];
+  state: {
+    account: { balance: number; currency: string } | null;
+    existingWithdrawalIds: string[];
+  };
+  maxSequenceNumber: number;
 }> {
   const accountEventsFilter = EventFilter.createFilter(['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn'])
     .withPayloadPredicates({ accountId });
@@ -65,21 +76,30 @@ async function getWithdrawState(eventStore: IEventStore, accountId: string): Pro
   const transferToFilter = EventFilter.createFilter(['MoneyTransferred'])
     .withPayloadPredicates({ toAccountId: accountId });
   
-  const [accountEvents, transferFromEvents, transferToEvents] = await Promise.all([
+  const [accountEventsResult, transferFromEventsResult, transferToEventsResult] = await Promise.all([
     eventStore.query<any>(accountEventsFilter),
     eventStore.query<any>(transferFromFilter),
     eventStore.query<any>(transferToFilter)
   ]);
   
-  const allEvents = [...accountEvents, ...transferFromEvents, ...transferToEvents];
+  const allEvents = [...accountEventsResult.events, ...transferFromEventsResult.events, ...transferToEventsResult.events];
   const account = buildAccountState(allEvents, accountId);
-  const existingWithdrawalIds = accountEvents
+  const existingWithdrawalIds = accountEventsResult.events
     .filter(e => (e.event_type || (e.eventType && e.eventType())) === 'MoneyWithdrawn')
     .map(e => e.withdrawalId);
 
+  const maxSequenceNumber = Math.max(
+    accountEventsResult.maxSequenceNumber,
+    transferFromEventsResult.maxSequenceNumber,
+    transferToEventsResult.maxSequenceNumber
+  );
+
   return {
-    account,
-    existingWithdrawalIds
+    state: {
+      account,
+      existingWithdrawalIds
+    },
+    maxSequenceNumber
   };
 }
 

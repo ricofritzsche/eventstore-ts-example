@@ -8,9 +8,9 @@ export async function execute(
   eventStore: IEventStore,
   command: DepositMoneyCommand
 ): Promise<DepositResult> {
-  const depositState = await getDepositState(eventStore, command.accountId);
+  const depositStateResult = await getDepositState(eventStore, command.accountId);
   
-  if (!depositState.account) {
+  if (!depositStateResult.state.account) {
     return {
       success: false,
       error: { type: 'InvalidAmount', message: 'Account not found' }
@@ -19,18 +19,18 @@ export async function execute(
 
   const effectiveCommand = {
     ...command,
-    currency: command.currency || depositState.account.currency
+    currency: command.currency || depositStateResult.state.account.currency
   };
 
-  const result = processDepositCommand(effectiveCommand, depositState.existingDepositIds);
+  const result = processDepositCommand(effectiveCommand, depositStateResult.state.existingDepositIds);
   
   if (!result.success) {
     return result;
   }
 
   try {
-    const filter = EventFilter.createFilter(['MoneyDeposited'])
-      .withPayloadPredicate('accountId', command.accountId);
+    const filter = EventFilter.createFilter(['BankAccountOpened', 'MoneyDeposited'])
+      .withPayloadPredicates({ accountId: command.accountId });
     
     const event = new MoneyDepositedEvent(
       result.event.accountId,
@@ -40,7 +40,7 @@ export async function execute(
       result.event.timestamp
     );
     
-    await eventStore.append(filter, [event]);
+    await eventStore.append(filter, [event], depositStateResult.maxSequenceNumber);
     
     return result;
   } catch (error) {
@@ -52,25 +52,31 @@ export async function execute(
 }
 
 async function getDepositState(eventStore: IEventStore, accountId: string): Promise<{
-  account: { currency: string } | null;
-  existingDepositIds: string[];
+  state: {
+    account: { currency: string } | null;
+    existingDepositIds: string[];
+  };
+  maxSequenceNumber: number;
 }> {
   const filter = EventFilter.createFilter(['BankAccountOpened', 'MoneyDeposited'])
     .withPayloadPredicates({ accountId });
   
-  const events = await eventStore.query<any>(filter);
+  const result = await eventStore.query<any>(filter);
   
-  const openingEvent = events.find(e => 
+  const openingEvent = result.events.find(e => 
     (e.event_type || (e.eventType && e.eventType())) === 'BankAccountOpened'
   );
   
   const account = openingEvent ? { currency: openingEvent.currency } : null;
-  const existingDepositIds = events
+  const existingDepositIds = result.events
     .filter(e => (e.event_type || (e.eventType && e.eventType())) === 'MoneyDeposited')
     .map(e => e.depositId);
 
   return {
-    account,
-    existingDepositIds
+    state: {
+      account,
+      existingDepositIds
+    },
+    maxSequenceNumber: result.maxSequenceNumber
   };
 }

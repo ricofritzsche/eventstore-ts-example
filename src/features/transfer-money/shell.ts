@@ -8,16 +8,16 @@ export async function execute(
   eventStore: IEventStore,
   command: TransferMoneyCommand
 ): Promise<TransferResult> {
-  const transferState = await getTransferState(eventStore, command.fromAccountId, command.toAccountId);
+  const transferStateResult = await getTransferState(eventStore, command.fromAccountId, command.toAccountId);
   
-  if (!transferState.fromAccount) {
+  if (!transferStateResult.state.fromAccount) {
     return {
       success: false,
       error: { type: 'InsufficientFunds', message: 'From account not found' }
     };
   }
 
-  if (!transferState.toAccount) {
+  if (!transferStateResult.state.toAccount) {
     return {
       success: false,
       error: { type: 'InsufficientFunds', message: 'To account not found' }
@@ -26,18 +26,25 @@ export async function execute(
 
   const effectiveCommand = {
     ...command,
-    currency: command.currency || transferState.fromAccount.currency
+    currency: command.currency || transferStateResult.state.fromAccount.currency
   };
 
-  const result = processTransferCommand(effectiveCommand, transferState.fromAccount.balance, transferState.existingTransferIds);
+  const result = processTransferCommand(effectiveCommand, transferStateResult.state.fromAccount.balance, transferStateResult.state.existingTransferIds);
   
   if (!result.success) {
     return result;
   }
 
   try {
-    const filter = EventFilter.createFilter(['MoneyTransferred'])
-      .withPayloadPredicate('transferId', command.transferId);
+    const filter = EventFilter.createFilter(
+      ['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn', 'MoneyTransferred'],
+      [
+        { accountId: command.fromAccountId },
+        { accountId: command.toAccountId },
+        { toAccountId: command.fromAccountId },
+        { fromAccountId: command.toAccountId }
+      ]
+    );
     
     const event = new MoneyTransferredEvent(
       result.event.fromAccountId,
@@ -48,7 +55,7 @@ export async function execute(
       result.event.timestamp
     );
     
-    await eventStore.append(filter, [event]);
+    await eventStore.append(filter, [event], transferStateResult.maxSequenceNumber);
     
     return result;
   } catch (error) {
@@ -61,9 +68,12 @@ export async function execute(
 
 
 async function getTransferState(eventStore: IEventStore, fromAccountId: string, toAccountId: string): Promise<{
-  fromAccount: { balance: number; currency: string } | null;
-  toAccount: { balance: number; currency: string } | null;
-  existingTransferIds: string[];
+  state: {
+    fromAccount: { balance: number; currency: string } | null;
+    toAccount: { balance: number; currency: string } | null;
+    existingTransferIds: string[];
+  };
+  maxSequenceNumber: number;
 }> {
   const filter = EventFilter.createFilter(
     ['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn', 'MoneyTransferred'],
@@ -75,18 +85,21 @@ async function getTransferState(eventStore: IEventStore, fromAccountId: string, 
     ]
   );
 
-  const allEvents = await eventStore.query<any>(filter);
+  const result = await eventStore.query<any>(filter);
   
-  const fromAccount = buildAccountState(allEvents, fromAccountId);
-  const toAccount = buildAccountState(allEvents, toAccountId);
-  const existingTransferIds = allEvents
+  const fromAccount = buildAccountState(result.events, fromAccountId);
+  const toAccount = buildAccountState(result.events, toAccountId);
+  const existingTransferIds = result.events
     .filter(e => (e.event_type || (e.eventType && e.eventType())) === 'MoneyTransferred')
     .map(e => e.transferId);
 
   return {
-    fromAccount,
-    toAccount,
-    existingTransferIds
+    state: {
+      fromAccount,
+      toAccount,
+      existingTransferIds
+    },
+    maxSequenceNumber: result.maxSequenceNumber
   };
 }
 
