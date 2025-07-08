@@ -23,7 +23,7 @@ export class PostgresEventStore implements IEventStore {
       // First get the max sequence number for the context
       const contextQuery = this.buildContextQuery(filter);
       const contextResult = await client.query(contextQuery.sql, contextQuery.params);
-      const maxSequenceNumber = contextResult.rows[0]?.max_seq || 0;
+      const maxSequenceNumber = parseInt(contextResult.rows[0]?.max_seq || '0', 10);
 
       // Then get the actual events
       let query = 'SELECT * FROM events WHERE event_type = ANY($1)';
@@ -78,7 +78,6 @@ export class PostgresEventStore implements IEventStore {
       
       const params = [
         ...contextQueryForCte.params,                         // Context parameters (dynamic based on filter)
-        expectedMaxSequence,                                  // Expected max sequence
         eventTypes,                                           // Event types to insert
         payloads,                                             // Payloads to insert
         metadata                                             // Metadata to insert
@@ -124,10 +123,9 @@ export class PostgresEventStore implements IEventStore {
     
     // Calculate parameter positions for insert values
     const contextParamCount = contextQuery.params.length;
-    const expectedMaxSeqParam = contextParamCount + 1;
-    const eventTypesParam = contextParamCount + 2;
-    const payloadsParam = contextParamCount + 3;
-    const metadataParam = contextParamCount + 4;
+    const eventTypesParam = contextParamCount + 1;
+    const payloadsParam = contextParamCount + 2;
+    const metadataParam = contextParamCount + 3;
 
     return `
       WITH context AS (
@@ -138,7 +136,7 @@ export class PostgresEventStore implements IEventStore {
       INSERT INTO events (event_type, payload, metadata)
       SELECT unnest($${eventTypesParam}::text[]), unnest($${payloadsParam}::jsonb[]), unnest($${metadataParam}::jsonb[])
       FROM context
-      WHERE COALESCE(max_seq, 0) = $${expectedMaxSeqParam}
+      WHERE COALESCE(max_seq, 0) = ${expectedMaxSeq}
     `;
   }
 
