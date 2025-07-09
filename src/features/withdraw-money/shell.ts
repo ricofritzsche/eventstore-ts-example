@@ -67,32 +67,24 @@ async function getWithdrawState(eventStore: IEventStore, accountId: string): Pro
   };
   maxSequenceNumber: number;
 }> {
-  const accountEventsFilter = EventFilter.createFilter(['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn'])
-    .withPayloadPredicates({ accountId });
+  // Single optimized query using payloadPredicateOptions for multiple account relationships
+  const filter = EventFilter.createFilter(
+    ['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn', 'MoneyTransferred'],
+    [
+      { accountId: accountId },
+      { fromAccountId: accountId },
+      { toAccountId: accountId }
+    ]
+  );
   
-  const transferFromFilter = EventFilter.createFilter(['MoneyTransferred'])
-    .withPayloadPredicates({ fromAccountId: accountId });
-  
-  const transferToFilter = EventFilter.createFilter(['MoneyTransferred'])
-    .withPayloadPredicates({ toAccountId: accountId });
-  
-  const [accountEventsResult, transferFromEventsResult, transferToEventsResult] = await Promise.all([
-    eventStore.query<any>(accountEventsFilter),
-    eventStore.query<any>(transferFromFilter),
-    eventStore.query<any>(transferToFilter)
-  ]);
-  
-  const allEvents = [...accountEventsResult.events, ...transferFromEventsResult.events, ...transferToEventsResult.events];
+  const result = await eventStore.query<any>(filter);
+  const allEvents = result.events;
   const account = buildAccountState(allEvents, accountId);
-  const existingWithdrawalIds = accountEventsResult.events
+  const existingWithdrawalIds = allEvents
     .filter(e => (e.event_type || (e.eventType && e.eventType())) === 'MoneyWithdrawn')
     .map(e => e.withdrawalId);
 
-  const maxSequenceNumber = Math.max(
-    accountEventsResult.maxSequenceNumber,
-    transferFromEventsResult.maxSequenceNumber,
-    transferToEventsResult.maxSequenceNumber
-  );
+  const maxSequenceNumber = result.maxSequenceNumber;
 
   return {
     state: {

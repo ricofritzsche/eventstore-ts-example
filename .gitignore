@@ -130,3 +130,8 @@ temp/
 .Trashes
 ehthumbs.db
 Thumbs.db
+/load-test.js
+/load-test-detailed.js
+/load-test-millions.js
+/LOAD_TEST_RESULTS.md
+/tests/load-test.ts

@@ -17,22 +17,18 @@ async function getAccountViewState(eventStore: IEventStore, accountId: string): 
   };
   maxSequenceNumber: number;
 }> {
-  const accountEventsFilter = EventFilter.createFilter(['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn'])
-    .withPayloadPredicates({ accountId });
+  // Single optimized query using payloadPredicateOptions for multiple account relationships
+  const filter = EventFilter.createFilter(
+    ['BankAccountOpened', 'MoneyDeposited', 'MoneyWithdrawn', 'MoneyTransferred'],
+    [
+      { accountId: accountId },
+      { fromAccountId: accountId },
+      { toAccountId: accountId }
+    ]
+  );
   
-  const transferFromFilter = EventFilter.createFilter(['MoneyTransferred'])
-    .withPayloadPredicates({ fromAccountId: accountId });
-  
-  const transferToFilter = EventFilter.createFilter(['MoneyTransferred'])
-    .withPayloadPredicates({ toAccountId: accountId });
-  
-  const [accountEventsResult, transferFromEventsResult, transferToEventsResult] = await Promise.all([
-    eventStore.query<any>(accountEventsFilter),
-    eventStore.query<any>(transferFromFilter),
-    eventStore.query<any>(transferToFilter)
-  ]);
-  
-  const allEvents = [...accountEventsResult.events, ...transferFromEventsResult.events, ...transferToEventsResult.events];
+  const result = await eventStore.query<any>(filter);
+  const allEvents = result.events;
   
   const openingEvent = allEvents.find(e => 
     (e.event_type || (e.eventType && e.eventType())) === 'BankAccountOpened'
@@ -41,11 +37,7 @@ async function getAccountViewState(eventStore: IEventStore, accountId: string): 
   if (!openingEvent) {
     return { 
       state: { account: null },
-      maxSequenceNumber: Math.max(
-        accountEventsResult.maxSequenceNumber,
-        transferFromEventsResult.maxSequenceNumber,
-        transferToEventsResult.maxSequenceNumber
-      )
+      maxSequenceNumber: result.maxSequenceNumber
     };
   }
 
@@ -67,11 +59,7 @@ async function getAccountViewState(eventStore: IEventStore, accountId: string): 
     }
   }
 
-  const maxSequenceNumber = Math.max(
-    accountEventsResult.maxSequenceNumber,
-    transferFromEventsResult.maxSequenceNumber,
-    transferToEventsResult.maxSequenceNumber
-  );
+  const maxSequenceNumber = result.maxSequenceNumber;
 
   return {
     state: {
